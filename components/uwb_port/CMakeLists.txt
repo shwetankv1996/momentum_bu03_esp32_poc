@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "source/uwb_port_spi.c"
+        "source/uwb_port_gpio.c"
+        "source/uwb_port_irq.c"
+        "source/uwb_port_time.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "../uwb_poc/include"
+    REQUIRES
+        driver
+        esp_timer
+        freertos
+        log
+)

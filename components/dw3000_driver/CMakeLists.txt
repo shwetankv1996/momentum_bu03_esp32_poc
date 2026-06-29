@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS
+        "source/dw3000_momentum_port.c"
+        "upstream/dwt_uwb_driver/deca_interface.c"
+        "upstream/dwt_uwb_driver/deca_rsl.c"
+        "upstream/dwt_uwb_driver/lib/qmath/src/qmath.c"
+        "upstream/platform/deca_compat.c"
+        "upstream/dwt_uwb_driver/dw3000/dw3000_device.c"
+    INCLUDE_DIRS
+        "include"
+        "upstream/platform"
+        "upstream/dwt_uwb_driver"
+        "upstream/dwt_uwb_driver/dw3000"
+        "upstream/dwt_uwb_driver/lib/qmath/include"
+    REQUIRES
+        freertos
+        uwb_port
+)
+
+target_compile_definitions(${COMPONENT_LIB}
+    PUBLIC
+        CONFIG_DW3000_CHIP_DW3000=1
+        CONFIG_DW3000_CHIP_DW3720=0
+        CONFIG_DW3000_SPI_TRACE=0
+)

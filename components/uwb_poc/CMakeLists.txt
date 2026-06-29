@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS
+        "source/uwb_poc.c"
+        "source/uwb_poc_config.c"
+        "source/uwb_poc_ranging.c"
+        "source/uwb_poc_diag.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "source"
+    REQUIRES
+        driver
+        esp_timer
+        freertos
+        log
+        uwb_port
+        dw3000_driver
+)
