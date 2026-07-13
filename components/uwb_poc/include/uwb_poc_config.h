@@ -19,15 +19,30 @@
 
 #define UWB_POC_TAG_NODE_ID 1
 #define UWB_POC_ANCHOR_NODE_ID 2
-#define UWB_POC_DEFAULT_ROLE UWB_ROLE_ANCHOR            //HERE I CAHNGE IT TO TAG OR ANCHOR #define UWB_POC_DEFAULT_ROLE UWB_ROLE_TAG
+
+/*
+ * Debug selection:
+ * - For first RF bring-up, flash one board with SIMPLE_TX + TAG
+ *   and the other with SIMPLE_RX + ANCHOR.
+ * - Return to DS_TWR only after SIMPLE_RX receives frames.
+ */
+#define UWB_POC_DEFAULT_ROLE UWB_ROLE_ANCHOR
+#define UWB_POC_DEFAULT_MODE UWB_POC_MODE_SIMPLE_RX
+
 #if UWB_POC_DEFAULT_ROLE == UWB_ROLE_TAG
 #define UWB_POC_DEFAULT_NODE_ID UWB_POC_TAG_NODE_ID
 #else
 #define UWB_POC_DEFAULT_NODE_ID UWB_POC_ANCHOR_NODE_ID
 #endif
+
 #define UWB_POC_DEFAULT_CHANNEL 5
 #define UWB_POC_DEFAULT_DATA_RATE 6800
+
+/* Keep STS off for basic TX/RX debug. Re-enable for DS-TWR STS validation later. */
+#define UWB_POC_ENABLE_STS 0
 
 #define UWB_POC_RANGING_TASK_STACK_BYTES 4096
 #define UWB_POC_RANGING_TASK_PRIORITY 5
 #define UWB_POC_DIAG_PRINT_PERIOD_MS 1000
+#define UWB_POC_DEBUG_STEP_DELAY_MS 500
+#define UWB_POC_SIMPLE_TX_PERIOD_MS 1000
