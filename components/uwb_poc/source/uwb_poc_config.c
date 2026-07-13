@@ -103,7 +103,11 @@ esp_err_t uwb_poc_apply_default_config(void)
         .phrMode = DWT_PHRMODE_STD,
         .phrRate = DWT_PHRRATE_STD,
         .sfdTO = 129,
+#if UWB_POC_ENABLE_STS
         .stsMode = (dwt_sts_mode_e)(DWT_STS_MODE_1 | DWT_STS_MODE_SDC),
+#else
+        .stsMode = DWT_STS_MODE_OFF,
+#endif
         .stsLength = DWT_STS_LEN_64,
         .pdoaMode = DWT_PDOA_M0,
     };
@@ -125,8 +129,9 @@ esp_err_t uwb_poc_apply_default_config(void)
     port_set_dw_ic_spi_fastrate();
 
     ESP_LOGI(TAG,
-             "DW3000 PHY configured ch=%u rate=%u kbps plen=64 pac=8 code=9",
+             "DW3000 PHY configured ch=%u rate=%u kbps plen=64 pac=8 code=9 sts=%u",
              UWB_POC_DEFAULT_CHANNEL,
-             UWB_POC_DEFAULT_DATA_RATE);
+             UWB_POC_DEFAULT_DATA_RATE,
+             UWB_POC_ENABLE_STS);
     return ESP_OK;
 }
