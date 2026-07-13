@@ -10,6 +10,27 @@ static const char *TAG = "UWB_POC_CONFIG";
 
 static bool s_driver_probed;
 
+static esp_err_t uwb_poc_read_raw_device_id(uint32_t *device_id)
+{
+    if (device_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t header = 0x00U;
+    uint8_t buffer[sizeof(uint32_t)] = { 0 };
+    int ret = readfromspi(sizeof(header), &header, sizeof(buffer), buffer);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "raw DW3000 device ID read failed");
+        return ESP_FAIL;
+    }
+
+    *device_id = ((uint32_t)buffer[3] << 24U) |
+                 ((uint32_t)buffer[2] << 16U) |
+                 ((uint32_t)buffer[1] << 8U) |
+                 (uint32_t)buffer[0];
+    return ESP_OK;
+}
+
 static esp_err_t uwb_poc_probe_driver(void)
 {
     if (s_driver_probed) {
@@ -36,12 +57,11 @@ esp_err_t uwb_poc_read_device_id(uint32_t *device_id)
 
     *device_id = 0;
 
-    esp_err_t ret = uwb_poc_probe_driver();
+    esp_err_t ret = uwb_poc_read_raw_device_id(device_id);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    *device_id = dwt_readdevid();
     ESP_LOGI(TAG, "DW3000 device ID read: 0x%08lx", (unsigned long)*device_id);
     return ESP_OK;
 }

@@ -9,8 +9,11 @@ idf_component_register(
     PRIV_INCLUDE_DIRS
         "../uwb_poc/include"
     REQUIRES
-        driver
+        esp_driver_gpio
+        esp_driver_spi
         esp_timer
         freertos
         log
+    PRIV_REQUIRES
+        uwb_poc
 )

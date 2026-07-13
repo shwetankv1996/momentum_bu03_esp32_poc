@@ -40,7 +40,7 @@ static uwb_role_t s_ranging_role = UWB_ROLE_TAG;
 
 #define UWB_RX_TIMEOUT_UUS 10000U
 #define UWB_RX_AFTER_TX_DELAY_UUS 150U
-#define UWB_TAG_FINAL_DELAY_US 5000U
+#define UWB_TAG_FINAL_DELAY_US 20000U
 #define UWB_RANGE_WAIT_MAX_MS 50U
 #define UWB_SPEED_OF_LIGHT_MPS 299702547.0
 
@@ -294,6 +294,13 @@ static void uwb_tag_step(uint8_t *seq)
     const uint32_t final_tx_time = (uint32_t)((resp_rx_ts_40 + US_TO_DTU(UWB_TAG_FINAL_DELAY_US)) >> 8);
     const uint32_t final_tx_ts = (uint32_t)(((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8);
 
+    ESP_LOGI(TAG,
+             "schedule FINAL seq=%u anchor=%u tx_time=0x%08lx delay=%u us",
+             *seq,
+             anchor_id,
+             (unsigned long)final_tx_time,
+             UWB_TAG_FINAL_DELAY_US);
+
     uwb_frame_init(final,
                    UWB_FRAME_TYPE_FINAL,
                    *seq,
@@ -414,7 +421,7 @@ static void uwb_anchor_step(void)
         return;
     }
 
-    ESP_LOGI(TAG, "range tag=%u anchor=%u distance=%.2f m",
+    ESP_LOGI(TAG, "distance computed tag=%u anchor=%u distance=%.2f m",
              tag_id,
              UWB_POC_DEFAULT_NODE_ID,
              distance_m);
