@@ -9,6 +9,12 @@ typedef enum {
 } uwb_role_t;
 
 typedef enum {
+    UWB_POC_MODE_SIMPLE_TX = 0,
+    UWB_POC_MODE_SIMPLE_RX,
+    UWB_POC_MODE_DS_TWR,
+} uwb_poc_mode_t;
+
+typedef enum {
     UWB_POC_STATE_IDLE = 0,
     UWB_POC_STATE_INITIALIZED,
     UWB_POC_STATE_RUNNING,
@@ -37,12 +43,18 @@ typedef struct {
     uint32_t device_id;
     uwb_poc_state_t state;
     uwb_role_t role;
+    uwb_poc_mode_t mode;
     uint32_t init_count;
     uint32_t reset_count;
     uint32_t tx_count;
     uint32_t rx_ok_count;
     uint32_t rx_timeout_count;
     uint32_t rx_error_count;
+    uint32_t simple_tx_count;
+    uint32_t simple_rx_ok_count;
+    uint32_t simple_rx_timeout_count;
+    uint32_t simple_rx_error_count;
+    uint32_t last_rx_status;
     uint32_t range_ok_count;
     uint32_t range_invalid_count;
     uint32_t last_range_ms;

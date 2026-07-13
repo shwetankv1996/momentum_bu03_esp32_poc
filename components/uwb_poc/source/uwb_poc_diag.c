@@ -40,6 +40,7 @@ void uwb_poc_diag_reset(void)
     memset(&s_diag, 0, sizeof(s_diag));
     s_diag.state = UWB_POC_STATE_IDLE;
     s_diag.role = UWB_POC_DEFAULT_ROLE;
+    s_diag.mode = UWB_POC_DEFAULT_MODE;
     uwb_poc_diag_unlock();
 }
 
@@ -54,6 +55,13 @@ void uwb_poc_diag_set_role(uwb_role_t role)
 {
     uwb_poc_diag_lock();
     s_diag.role = role;
+    uwb_poc_diag_unlock();
+}
+
+void uwb_poc_diag_set_mode(uwb_poc_mode_t mode)
+{
+    uwb_poc_diag_lock();
+    s_diag.mode = mode;
     uwb_poc_diag_unlock();
 }
 
@@ -125,6 +133,41 @@ void uwb_poc_diag_inc_rx_error(void)
 {
     uwb_poc_diag_lock();
     s_diag.rx_error_count++;
+    uwb_poc_diag_unlock();
+}
+
+void uwb_poc_diag_inc_simple_tx(void)
+{
+    uwb_poc_diag_lock();
+    s_diag.simple_tx_count++;
+    uwb_poc_diag_unlock();
+}
+
+void uwb_poc_diag_inc_simple_rx_ok(void)
+{
+    uwb_poc_diag_lock();
+    s_diag.simple_rx_ok_count++;
+    uwb_poc_diag_unlock();
+}
+
+void uwb_poc_diag_inc_simple_rx_timeout(void)
+{
+    uwb_poc_diag_lock();
+    s_diag.simple_rx_timeout_count++;
+    uwb_poc_diag_unlock();
+}
+
+void uwb_poc_diag_inc_simple_rx_error(void)
+{
+    uwb_poc_diag_lock();
+    s_diag.simple_rx_error_count++;
+    uwb_poc_diag_unlock();
+}
+
+void uwb_poc_diag_set_last_rx_status(uint32_t status)
+{
+    uwb_poc_diag_lock();
+    s_diag.last_rx_status = status;
     uwb_poc_diag_unlock();
 }
 
