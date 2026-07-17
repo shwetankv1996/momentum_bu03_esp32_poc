@@ -43,11 +43,12 @@ static uwb_poc_mode_t s_ranging_mode = UWB_POC_DEFAULT_MODE;
 
 #define UWB_RX_TIMEOUT_UUS 10000U
 #define UWB_RX_AFTER_TX_DELAY_UUS 150U
-#define UWB_TAG_FINAL_DELAY_US 20000U
+#define UWB_TAG_FINAL_DELAY_US 100000U
 #define UWB_DS_TWR_WAIT_MAX_MS 50U
 #define UWB_ANCHOR_POLL_WAIT_MAX_MS 1500U
 #define UWB_SIMPLE_RX_WAIT_MAX_MS 1500U
 #define UWB_SIMPLE_RX_TIMEOUT_LOG_PERIOD 50U
+#define UWB_DS_TWR_RETRY_DELAY_MS 100U
 #define UWB_DS_TWR_CYCLE_DELAY_MS 250U
 #define UWB_SPEED_OF_LIGHT_MPS 299702547.0
 
@@ -183,6 +184,11 @@ static void uwb_log_rx_status(const char *ctx, uint32_t status)
              uwb_port_irq_is_asserted() ? 1 : 0);
 }
 
+static void uwb_ds_twr_retry_delay(void)
+{
+    vTaskDelay(pdMS_TO_TICKS(UWB_DS_TWR_RETRY_DELAY_MS));
+}
+
 static bool uwb_wait_for_status(uint32_t mask, uint32_t wait_max_ms, uint32_t *status_out)
 {
     const uint32_t started_ms = uwb_port_get_time_ms();
@@ -235,6 +241,62 @@ static bool uwb_send_frame(uint8_t *frame,
     uint32_t status = 0;
     if (!uwb_wait_for_status(DWT_INT_TXFRS_BIT_MASK, UWB_DS_TWR_WAIT_MAX_MS, &status)) {
         ESP_LOGW(TAG, "TX done wait timeout status=0x%08lx", (unsigned long)status);
+        return false;
+    }
+
+    dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+    return true;
+}
+
+static bool uwb_send_delayed_final_frame(uint8_t *frame,
+                                         uint16_t payload_len,
+                                         uint32_t final_tx_time,
+                                         uint32_t final_tx_ts,
+                                         uint64_t resp_rx_ts_40)
+{
+    dwt_forcetrxoff();
+    uwb_clear_events();
+
+    if (dwt_writetxdata(payload_len, frame, 0) != DWT_SUCCESS) {
+        ESP_LOGE(TAG, "TAG FINAL dwt_writetxdata failed");
+        return false;
+    }
+
+    dwt_writetxfctrl(payload_len + FCS_LEN, 0, 1);
+
+    const uint32_t sys_hi_before = dwt_readsystimestamphi32();
+    dwt_setdelayedtrxtime(final_tx_time);
+
+    const int32_t start_ret = dwt_starttx(DWT_START_TX_DELAYED);
+    if (start_ret != DWT_SUCCESS) {
+        const uint32_t status = dwt_readsysstatuslo();
+        const uint32_t sys_hi_after = dwt_readsystimestamphi32();
+        ESP_LOGE(TAG,
+                 "TAG FINAL delayed tx failed ret=%ld final_tx_time=0x%08lx final_tx_ts=0x%08lx sys_hi_before=0x%08lx sys_hi_after=0x%08lx delta_hi=%ld resp_rx_40=0x%010llx status=0x%08lx",
+                 (long)start_ret,
+                 (unsigned long)final_tx_time,
+                 (unsigned long)final_tx_ts,
+                 (unsigned long)sys_hi_before,
+                 (unsigned long)sys_hi_after,
+                 (long)(int32_t)(final_tx_time - sys_hi_before),
+                 (unsigned long long)resp_rx_ts_40,
+                 (unsigned long)status);
+        dwt_forcetrxoff();
+        uwb_clear_events();
+        return false;
+    }
+
+    uwb_poc_diag_inc_tx();
+
+    uint32_t status = 0;
+    if (!uwb_wait_for_status(DWT_INT_TXFRS_BIT_MASK, UWB_DS_TWR_WAIT_MAX_MS, &status)) {
+        ESP_LOGW(TAG,
+                 "TAG FINAL tx done wait timeout final_tx_time=0x%08lx final_tx_ts=0x%08lx status=0x%08lx",
+                 (unsigned long)final_tx_time,
+                 (unsigned long)final_tx_ts,
+                 (unsigned long)status);
+        dwt_forcetrxoff();
+        uwb_clear_events();
         return false;
     }
 
@@ -351,12 +413,6 @@ static void uwb_simple_rx_step(void)
     uint8_t frame[32] = {0};
 
     uwb_clear_rx_events();
-
-    /*
-     * SIMPLE_RX is a debug mode used to prove basic RF reception. Keep RX open
-     * continuously instead of using the DS-TWR frame-wait timeout, otherwise
-     * the receiver can repeatedly close its RX window between SIMPLE_TX packets.
-     */
     dwt_setrxtimeout(0);
 
     if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
@@ -423,6 +479,7 @@ static void uwb_tag_step(uint8_t *seq)
                         DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED,
                         false)) {
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -434,6 +491,7 @@ static void uwb_tag_step(uint8_t *seq)
 
     uint32_t status = 0;
     if (!uwb_wait_for_rx(&status, true, "TAG_WAIT_RESP")) {
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -451,12 +509,14 @@ static void uwb_tag_step(uint8_t *seq)
                  *seq);
         uwb_poc_diag_inc_rx_error();
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
     const uint16_t anchor_id = uwb_frame_get_u16(resp, UWB_FRAME_IDX_ANCHOR_ID);
-    const uint32_t final_tx_time = (uint32_t)((resp_rx_ts_40 + US_TO_DTU(UWB_TAG_FINAL_DELAY_US)) >> 8);
-    const uint32_t final_tx_ts = (uint32_t)(((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8);
+    uint32_t final_tx_time = (uint32_t)((resp_rx_ts_40 + US_TO_DTU(UWB_TAG_FINAL_DELAY_US)) >> 8);
+    final_tx_time &= 0xFFFFFFFEUL;
+    const uint32_t final_tx_ts = (uint32_t)(((uint64_t)final_tx_time) << 8);
 
     ESP_LOGI(TAG,
              "TAG RESP rx seq=%u anchor=%u poll_tx=0x%08lx resp_rx=0x%08lx",
@@ -481,14 +541,13 @@ static void uwb_tag_step(uint8_t *seq)
     uwb_frame_put_u32(final, UWB_FRAME_IDX_RESP_RX_TS, resp_rx_ts);
     uwb_frame_put_u32(final, UWB_FRAME_IDX_FINAL_TX_TS, final_tx_ts);
 
-    uwb_clear_events();
-    dwt_setdelayedtrxtime(final_tx_time);
-
-    if (!uwb_send_frame(final,
-                        sizeof(final),
-                        DWT_START_TX_DELAYED,
-                        true)) {
+    if (!uwb_send_delayed_final_frame(final,
+                                      sizeof(final),
+                                      final_tx_time,
+                                      final_tx_ts,
+                                      resp_rx_ts_40)) {
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -508,11 +567,6 @@ static void uwb_anchor_step(void)
     uint8_t final[UWB_FRAME_FINAL_LEN] = {0};
 
     uwb_clear_rx_events();
-
-    /*
-     * The anchor should be continuously available for the first POLL. Use an
-     * open RX timeout here; keep the tighter DS-TWR RX timeout only after RESP.
-     */
     dwt_setrxtimeout(0);
 
     if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
@@ -540,6 +594,7 @@ static void uwb_anchor_step(void)
                  poll[UWB_FRAME_IDX_SEQ]);
         uwb_poc_diag_inc_rx_error();
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -567,6 +622,7 @@ static void uwb_anchor_step(void)
                         DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED,
                         false)) {
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -577,6 +633,7 @@ static void uwb_anchor_step(void)
              UWB_POC_ANCHOR_NODE_ID);
 
     if (!uwb_wait_for_rx(&status, true, "ANCHOR_WAIT_FINAL")) {
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -593,6 +650,7 @@ static void uwb_anchor_step(void)
                  seq);
         uwb_poc_diag_inc_rx_error();
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -624,6 +682,7 @@ static void uwb_anchor_step(void)
                  da,
                  db);
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
@@ -641,6 +700,7 @@ static void uwb_anchor_step(void)
                  db,
                  tof_dtu);
         uwb_poc_ranging_set_invalid();
+        uwb_ds_twr_retry_delay();
         return;
     }
 
