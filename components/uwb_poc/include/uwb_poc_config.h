@@ -44,5 +44,12 @@
 #define UWB_POC_RANGING_TASK_STACK_BYTES 4096
 #define UWB_POC_RANGING_TASK_PRIORITY 5
 #define UWB_POC_DIAG_PRINT_PERIOD_MS 1000
-#define UWB_POC_DEBUG_STEP_DELAY_MS 500
+
+/*
+ * Keep SIMPLE_RX re-arm latency near zero during RF bring-up.
+ * The previous 500 ms delay made the receiver deaf between RX windows and
+ * caused it to catch only occasional SIMPLE_TX frames.
+ */
+#define UWB_POC_DEBUG_STEP_DELAY_MS 0
+
 #define UWB_POC_SIMPLE_TX_PERIOD_MS 1000

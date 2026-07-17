@@ -44,8 +44,12 @@ static uwb_poc_mode_t s_ranging_mode = UWB_POC_DEFAULT_MODE;
 #define UWB_RX_TIMEOUT_UUS 10000U
 #define UWB_RX_AFTER_TX_DELAY_UUS 150U
 #define UWB_TAG_FINAL_DELAY_US 20000U
-#define UWB_RANGE_WAIT_MAX_MS 50U
+#define UWB_DS_TWR_WAIT_MAX_MS 50U
+#define UWB_SIMPLE_RX_WAIT_MAX_MS 1500U
+#define UWB_SIMPLE_RX_TIMEOUT_LOG_PERIOD 50U
 #define UWB_SPEED_OF_LIGHT_MPS 299702547.0
+
+static uint32_t s_simple_rx_timeout_log_counter;
 
 static bool uwb_poc_range_ensure_mutex(void)
 {
@@ -177,7 +181,7 @@ static void uwb_log_rx_status(const char *ctx, uint32_t status)
              uwb_port_irq_is_asserted() ? 1 : 0);
 }
 
-static bool uwb_wait_for_status(uint32_t mask, uint32_t *status_out)
+static bool uwb_wait_for_status(uint32_t mask, uint32_t wait_max_ms, uint32_t *status_out)
 {
     const uint32_t started_ms = uwb_port_get_time_ms();
 
@@ -190,7 +194,7 @@ static bool uwb_wait_for_status(uint32_t mask, uint32_t *status_out)
             return true;
         }
 
-        if ((uwb_port_get_time_ms() - started_ms) > UWB_RANGE_WAIT_MAX_MS) {
+        if (wait_max_ms > 0U && ((uwb_port_get_time_ms() - started_ms) > wait_max_ms)) {
             if (status_out != NULL) {
                 *status_out = status;
             }
@@ -227,7 +231,7 @@ static bool uwb_send_frame(uint8_t *frame,
     }
 
     uint32_t status = 0;
-    if (!uwb_wait_for_status(DWT_INT_TXFRS_BIT_MASK, &status)) {
+    if (!uwb_wait_for_status(DWT_INT_TXFRS_BIT_MASK, UWB_DS_TWR_WAIT_MAX_MS, &status)) {
         ESP_LOGW(TAG, "TX done wait timeout status=0x%08lx", (unsigned long)status);
         return false;
     }
@@ -236,14 +240,18 @@ static bool uwb_send_frame(uint8_t *frame,
     return true;
 }
 
-static bool uwb_wait_for_rx(uint32_t *status_out, bool mark_range_invalid, const char *ctx)
+static bool uwb_wait_for_rx_with_timeout(uint32_t *status_out,
+                                         bool mark_range_invalid,
+                                         const char *ctx,
+                                         uint32_t wait_max_ms,
+                                         bool log_on_fail)
 {
     const uint32_t rx_mask = DWT_INT_RXFCG_BIT_MASK |
                              SYS_STATUS_ALL_RX_TO |
                              SYS_STATUS_ALL_RX_ERR;
 
     uint32_t status = 0;
-    bool got_status = uwb_wait_for_status(rx_mask, &status);
+    bool got_status = uwb_wait_for_status(rx_mask, wait_max_ms, &status);
     if (status_out != NULL) {
         *status_out = status;
     }
@@ -252,7 +260,9 @@ static bool uwb_wait_for_rx(uint32_t *status_out, bool mark_range_invalid, const
 
     if (!got_status) {
         uwb_poc_diag_inc_rx_timeout();
-        uwb_log_rx_status(ctx, status);
+        if (log_on_fail) {
+            uwb_log_rx_status(ctx, status);
+        }
         if (mark_range_invalid) {
             uwb_poc_ranging_set_invalid();
         }
@@ -270,12 +280,32 @@ static bool uwb_wait_for_rx(uint32_t *status_out, bool mark_range_invalid, const
         uwb_poc_diag_inc_rx_error();
     }
 
-    uwb_log_rx_status(ctx, status);
+    if (log_on_fail) {
+        uwb_log_rx_status(ctx, status);
+    }
     dwt_writesysstatuslo(status & (SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR));
     if (mark_range_invalid) {
         uwb_poc_ranging_set_invalid();
     }
     return false;
+}
+
+static bool uwb_wait_for_rx(uint32_t *status_out, bool mark_range_invalid, const char *ctx)
+{
+    return uwb_wait_for_rx_with_timeout(status_out,
+                                        mark_range_invalid,
+                                        ctx,
+                                        UWB_DS_TWR_WAIT_MAX_MS,
+                                        true);
+}
+
+static bool uwb_wait_for_rx_simple(uint32_t *status_out)
+{
+    return uwb_wait_for_rx_with_timeout(status_out,
+                                        false,
+                                        "SIMPLE_RX",
+                                        UWB_SIMPLE_RX_WAIT_MAX_MS,
+                                        false);
 }
 
 static void uwb_simple_tx_step(uint8_t *seq)
@@ -310,31 +340,43 @@ static void uwb_simple_rx_step(void)
     uint8_t frame[32] = {0};
 
     uwb_clear_rx_events();
-    dwt_setrxtimeout(UWB_RX_TIMEOUT_UUS);
+
+    /*
+     * SIMPLE_RX is a debug mode used to prove basic RF reception. Keep RX open
+     * continuously instead of using the DS-TWR frame-wait timeout, otherwise
+     * the receiver can repeatedly close its RX window between SIMPLE_TX packets.
+     */
+    dwt_setrxtimeout(0);
 
     if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
         ESP_LOGE(TAG, "SIMPLE_RX dwt_rxenable failed");
         uwb_poc_diag_inc_rx_error();
         uwb_poc_diag_inc_simple_rx_error();
-        vTaskDelay(pdMS_TO_TICKS(UWB_POC_DEBUG_STEP_DELAY_MS));
+        taskYIELD();
         return;
     }
 
     uint32_t status = 0;
-    if (!uwb_wait_for_rx(&status, false, "SIMPLE_RX")) {
+    if (!uwb_wait_for_rx_simple(&status)) {
         if ((status & SYS_STATUS_ALL_RX_TO) != 0U || status == 0U) {
             uwb_poc_diag_inc_simple_rx_timeout();
+            s_simple_rx_timeout_log_counter++;
+            if ((s_simple_rx_timeout_log_counter % UWB_SIMPLE_RX_TIMEOUT_LOG_PERIOD) == 0U) {
+                uwb_log_rx_status("SIMPLE_RX", status);
+            }
         } else {
             uwb_poc_diag_inc_simple_rx_error();
+            uwb_log_rx_status("SIMPLE_RX", status);
         }
         uwb_clear_rx_events();
-        vTaskDelay(pdMS_TO_TICKS(UWB_POC_DEBUG_STEP_DELAY_MS));
+        taskYIELD();
         return;
     }
 
     dwt_readrxdata(frame, sizeof(frame), 0);
     dwt_writesysstatuslo(status & SYS_STATUS_ALL_RX_GOOD);
     uwb_poc_diag_inc_simple_rx_ok();
+    s_simple_rx_timeout_log_counter = 0U;
 
     ESP_LOGI(TAG,
              "SIMPLE_RX ok raw=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
