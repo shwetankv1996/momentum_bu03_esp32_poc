@@ -21,24 +21,30 @@
 #define UWB_POC_ANCHOR_NODE_ID 2
 
 /*
- * Debug selection:
- * - For first RF bring-up, flash one board with SIMPLE_TX + TAG
- *   and the other with SIMPLE_RX + ANCHOR.
- * - Return to DS_TWR only after SIMPLE_RX receives frames.
+ * Test selection:
+ * - SIMPLE_TX / SIMPLE_RX are retained for RF bring-up regression.
+ * - DS_TWR is the final ranging test path after SIMPLE_RX receives clean
+ *   sequential frames from SIMPLE_TX.
+ *
+ * For final DS-TWR testing, flash one board as:
+ *   UWB_ROLE_TAG + UWB_POC_MODE_DS_TWR
+ * and the other board as:
+ *   UWB_ROLE_ANCHOR + UWB_POC_MODE_DS_TWR
  */
 #define UWB_POC_DEFAULT_ROLE UWB_ROLE_ANCHOR
-#define UWB_POC_DEFAULT_MODE UWB_POC_MODE_SIMPLE_RX
+#define UWB_POC_DEFAULT_MODE UWB_POC_MODE_DS_TWR
 
-#if UWB_POC_DEFAULT_ROLE == UWB_ROLE_TAG
-#define UWB_POC_DEFAULT_NODE_ID UWB_POC_TAG_NODE_ID
-#else
-#define UWB_POC_DEFAULT_NODE_ID UWB_POC_ANCHOR_NODE_ID
-#endif
+/*
+ * Keep this as a C expression instead of #if on enum values. The preprocessor
+ * treats unknown enum identifiers as 0, which made ANCHOR builds print node_id=1.
+ */
+#define UWB_POC_DEFAULT_NODE_ID \
+    ((UWB_POC_DEFAULT_ROLE == UWB_ROLE_TAG) ? UWB_POC_TAG_NODE_ID : UWB_POC_ANCHOR_NODE_ID)
 
 #define UWB_POC_DEFAULT_CHANNEL 5
 #define UWB_POC_DEFAULT_DATA_RATE 6800
 
-/* Keep STS off for basic TX/RX debug. Re-enable for DS-TWR STS validation later. */
+/* Keep STS off for first DS-TWR functional validation. Re-enable after baseline ranging works. */
 #define UWB_POC_ENABLE_STS 0
 
 #define UWB_POC_RANGING_TASK_STACK_BYTES 4096
@@ -46,9 +52,8 @@
 #define UWB_POC_DIAG_PRINT_PERIOD_MS 1000
 
 /*
- * Keep SIMPLE_RX re-arm latency near zero during RF bring-up.
- * The previous 500 ms delay made the receiver deaf between RX windows and
- * caused it to catch only occasional SIMPLE_TX frames.
+ * Keep retry latency near zero during bring-up. Individual modes now control
+ * their own hardware and host-side RX wait windows.
  */
 #define UWB_POC_DEBUG_STEP_DELAY_MS 0
 

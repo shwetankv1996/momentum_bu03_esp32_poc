@@ -45,8 +45,10 @@ static uwb_poc_mode_t s_ranging_mode = UWB_POC_DEFAULT_MODE;
 #define UWB_RX_AFTER_TX_DELAY_UUS 150U
 #define UWB_TAG_FINAL_DELAY_US 20000U
 #define UWB_DS_TWR_WAIT_MAX_MS 50U
+#define UWB_ANCHOR_POLL_WAIT_MAX_MS 1500U
 #define UWB_SIMPLE_RX_WAIT_MAX_MS 1500U
 #define UWB_SIMPLE_RX_TIMEOUT_LOG_PERIOD 50U
+#define UWB_DS_TWR_CYCLE_DELAY_MS 250U
 #define UWB_SPEED_OF_LIGHT_MPS 299702547.0
 
 static uint32_t s_simple_rx_timeout_log_counter;
@@ -299,6 +301,15 @@ static bool uwb_wait_for_rx(uint32_t *status_out, bool mark_range_invalid, const
                                         true);
 }
 
+static bool uwb_wait_for_rx_anchor_poll(uint32_t *status_out)
+{
+    return uwb_wait_for_rx_with_timeout(status_out,
+                                        false,
+                                        "ANCHOR_WAIT_POLL",
+                                        UWB_ANCHOR_POLL_WAIT_MAX_MS,
+                                        true);
+}
+
 static bool uwb_wait_for_rx_simple(uint32_t *status_out)
 {
     return uwb_wait_for_rx_with_timeout(status_out,
@@ -415,6 +426,12 @@ static void uwb_tag_step(uint8_t *seq)
         return;
     }
 
+    ESP_LOGI(TAG,
+             "TAG POLL tx seq=%u tag=%u anchor=%u",
+             *seq,
+             UWB_POC_TAG_NODE_ID,
+             UWB_POC_ANCHOR_NODE_ID);
+
     uint32_t status = 0;
     if (!uwb_wait_for_rx(&status, true, "TAG_WAIT_RESP")) {
         return;
@@ -442,7 +459,14 @@ static void uwb_tag_step(uint8_t *seq)
     const uint32_t final_tx_ts = (uint32_t)(((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8);
 
     ESP_LOGI(TAG,
-             "schedule FINAL seq=%u anchor=%u tx_time=0x%08lx delay=%u us",
+             "TAG RESP rx seq=%u anchor=%u poll_tx=0x%08lx resp_rx=0x%08lx",
+             *seq,
+             anchor_id,
+             (unsigned long)poll_tx_ts,
+             (unsigned long)resp_rx_ts);
+
+    ESP_LOGI(TAG,
+             "TAG FINAL schedule seq=%u anchor=%u tx_time=0x%08lx delay=%u us",
              *seq,
              anchor_id,
              (unsigned long)final_tx_time,
@@ -468,8 +492,13 @@ static void uwb_tag_step(uint8_t *seq)
         return;
     }
 
+    ESP_LOGI(TAG,
+             "TAG FINAL tx seq=%u final_tx_ts=0x%08lx",
+             *seq,
+             (unsigned long)final_tx_ts);
+
     (*seq)++;
-    vTaskDelay(pdMS_TO_TICKS(UWB_POC_DEBUG_STEP_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(UWB_DS_TWR_CYCLE_DELAY_MS));
 }
 
 static void uwb_anchor_step(void)
@@ -479,18 +508,24 @@ static void uwb_anchor_step(void)
     uint8_t final[UWB_FRAME_FINAL_LEN] = {0};
 
     uwb_clear_rx_events();
-    dwt_setrxtimeout(UWB_RX_TIMEOUT_UUS);
+
+    /*
+     * The anchor should be continuously available for the first POLL. Use an
+     * open RX timeout here; keep the tighter DS-TWR RX timeout only after RESP.
+     */
+    dwt_setrxtimeout(0);
 
     if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
-        ESP_LOGE(TAG, "dwt_rxenable failed");
+        ESP_LOGE(TAG, "ANCHOR_WAIT_POLL dwt_rxenable failed");
         uwb_poc_diag_inc_rx_error();
         uwb_poc_ranging_set_invalid();
-        vTaskDelay(pdMS_TO_TICKS(UWB_POC_DEBUG_STEP_DELAY_MS));
+        taskYIELD();
         return;
     }
 
     uint32_t status = 0;
-    if (!uwb_wait_for_rx(&status, true, "ANCHOR_WAIT_POLL")) {
+    if (!uwb_wait_for_rx_anchor_poll(&status)) {
+        taskYIELD();
         return;
     }
 
@@ -511,6 +546,12 @@ static void uwb_anchor_step(void)
     const uint8_t seq = poll[UWB_FRAME_IDX_SEQ];
     const uint16_t tag_id = uwb_frame_get_u16(poll, UWB_FRAME_IDX_TAG_ID);
 
+    ESP_LOGI(TAG,
+             "ANCHOR POLL rx seq=%u tag=%u poll_rx=0x%08lx",
+             seq,
+             tag_id,
+             (unsigned long)poll_rx_ts);
+
     uwb_frame_init(resp,
                    UWB_FRAME_TYPE_RESP,
                    seq,
@@ -528,6 +569,12 @@ static void uwb_anchor_step(void)
         uwb_poc_ranging_set_invalid();
         return;
     }
+
+    ESP_LOGI(TAG,
+             "ANCHOR RESP tx seq=%u tag=%u anchor=%u wait_final=1",
+             seq,
+             tag_id,
+             UWB_POC_ANCHOR_NODE_ID);
 
     if (!uwb_wait_for_rx(&status, true, "ANCHOR_WAIT_FINAL")) {
         return;
@@ -553,6 +600,15 @@ static void uwb_anchor_step(void)
     const uint32_t resp_rx_ts = uwb_frame_get_u32(final, UWB_FRAME_IDX_RESP_RX_TS);
     const uint32_t final_tx_ts = uwb_frame_get_u32(final, UWB_FRAME_IDX_FINAL_TX_TS);
 
+    ESP_LOGI(TAG,
+             "ANCHOR FINAL rx seq=%u final_rx=0x%08lx poll_tx=0x%08lx resp_rx=0x%08lx final_tx=0x%08lx resp_tx=0x%08lx",
+             seq,
+             (unsigned long)final_rx_ts,
+             (unsigned long)poll_tx_ts,
+             (unsigned long)resp_rx_ts,
+             (unsigned long)final_tx_ts,
+             (unsigned long)resp_tx_ts);
+
     const double ra = (double)(uint32_t)(resp_rx_ts - poll_tx_ts);
     const double rb = (double)(uint32_t)(final_rx_ts - resp_tx_ts);
     const double da = (double)(uint32_t)(final_tx_ts - resp_rx_ts);
@@ -560,6 +616,13 @@ static void uwb_anchor_step(void)
     const double denominator = ra + rb + da + db;
 
     if (denominator <= 0.0) {
+        ESP_LOGW(TAG,
+                 "invalid denominator seq=%u ra=%.0f rb=%.0f da=%.0f db=%.0f",
+                 seq,
+                 ra,
+                 rb,
+                 da,
+                 db);
         uwb_poc_ranging_set_invalid();
         return;
     }
@@ -568,15 +631,30 @@ static void uwb_anchor_step(void)
     const float distance_m = (float)(tof_dtu * DWT_TIME_UNITS * UWB_SPEED_OF_LIGHT_MPS);
 
     if (distance_m < 0.0f || distance_m > 200.0f) {
-        ESP_LOGW(TAG, "invalid range %.2f m", distance_m);
+        ESP_LOGW(TAG,
+                 "invalid range %.2f m seq=%u ra=%.0f rb=%.0f da=%.0f db=%.0f tof=%.2f",
+                 distance_m,
+                 seq,
+                 ra,
+                 rb,
+                 da,
+                 db,
+                 tof_dtu);
         uwb_poc_ranging_set_invalid();
         return;
     }
 
-    ESP_LOGI(TAG, "distance computed tag=%u anchor=%u distance=%.2f m",
+    ESP_LOGI(TAG,
+             "distance computed tag=%u anchor=%u seq=%u distance=%.2f m ra=%.0f rb=%.0f da=%.0f db=%.0f tof=%.2f",
              tag_id,
              UWB_POC_ANCHOR_NODE_ID,
-             distance_m);
+             seq,
+             distance_m,
+             ra,
+             rb,
+             da,
+             db,
+             tof_dtu);
     uwb_poc_ranging_set_latest(distance_m, true);
 }
 
